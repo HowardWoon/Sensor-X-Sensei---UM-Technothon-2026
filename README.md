@@ -39,3 +39,15 @@ The dashboard provides real-time reporting on:
 
 ## 🖼️ Hardware Configuration
 The system is divided into three distinct micro-climate zones (Zone A, B, and C), each independently controlled by the ESP32 via IRF520 power MOSFETs. The setup is configured for modularity, allowing for easy scaling of the "Digital Twin" to any lecture hall size.
+
+## 📸 Physical Prototype Showcase
+The physical model is a highly detailed, functional representation of a tiered lecture hall, completely wired for real-time tracking:
+
+![Front View - Tiered Classroom](assets/front_view.jpg)
+*Front View: A 3-tier classroom model constructed from Impra board. The wall features the I2C TOF laser array and PIR motion sensor facing the seats. Each zone is equipped with a functional E10 lightbulb, a 12V ventilation fan, and an SG90 servo motor for directional sweeping.*
+
+![NFC Podium](assets/nfc_podium.jpg)
+*NFC Podium: A dedicated podium housing the MFRC522 Energy Passport scanner, where students tap in to initiate the session and power up Zone 1.*
+
+![Backend Wiring & Power Bank](assets/backend_wiring.jpg)
+*Backend Architecture: The master control center featuring the ESP32 brain, robust wire management, and an array of 6 IRF520 MOSFETs safely separating the 5V logic rail from the high-power fan and lighting rail.*
