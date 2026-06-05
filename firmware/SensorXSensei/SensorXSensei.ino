@@ -293,7 +293,9 @@ void setup() {
   server.on("/", []() { server.send(200, "text/html", judge_html); });
   
   server.on("/data", []() {
-    String json = "{\"nfc\":" + String(nfc_count) + ",\"class_active\":" + String(class_active) + 
+    String json;
+    json.reserve(512); // Pre-allocate heap memory to prevent ESP32 fragmentation crashes
+    json = "{\"nfc\":" + String(nfc_count) + ",\"class_active\":" + String(class_active) + 
                   ",\"pir\":\"" + pir_status + "\",\"tof\":\"" + tof_status + "\"" +
                   ",\"l1\":" + String(l1_on) + ",\"f1\":" + String(f1_on) + 
                   ",\"l2\":" + String(l2_on) + ",\"f2\":" + String(f2_on) + 
