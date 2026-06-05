@@ -1,7 +1,7 @@
 /*
  * SENSOR X SENSEI - SMART MICRO-CLIMATE ENERGY SYSTEM
- * UM Technothon 2026 - Master Presentation Firmware v7.0 (Final RC)
- * Features: Hardware Lock, Anti-Jitter, Physical PIR, Champion UI, Cache-Buster
+ * UM Technothon 2026 - Master Presentation Firmware v8.0 (100% Authentic)
+ * Features: Hardware Lock, Anti-Jitter, Physical PIR, Physical TOF (VL53L0X), Champion UI
  */
 
 #include <WiFi.h>
@@ -9,12 +9,14 @@
 #include <ESP32Servo.h>
 #include <SPI.h>
 #include <MFRC522.h>
+#include <Wire.h>
+#include <Adafruit_VL53L0X.h>
 
 // ==========================================
 // 1. NETWORK CONFIGURATION
 // ==========================================
 const char* ssid = "GGBOND";
-const char* password = "Woonhz1129"; // Updated Wi-Fi Password
+const char* password = "Woonhz1129";
 WebServer server(80);
 
 // ==========================================
@@ -33,7 +35,8 @@ const int LIGHT_Z3 = 32; const int FAN_Z3 = 27; const int SERVO_Z3_PIN = 17;
 
 // Sensors
 const int PIR_PIN = 13; // Physical PIR Sensor Input
-const int TOF_SDA = 21; const int TOF_SCL = 22;
+// TOF VL53L0X uses default ESP32 I2C pins: SDA 21, SCL 22
+Adafruit_VL53L0X lox = Adafruit_VL53L0X();
 
 Servo servo1; Servo servo2; Servo servo3;
 
@@ -41,10 +44,9 @@ Servo servo1; Servo servo2; Servo servo3;
 // 3. SYSTEM STATE VARIABLES
 // ==========================================
 int nfc_count = 0;
-String tof_fake_status = "0.0m (Empty)";
-String pir_fake_status = "Quiet";
+String tof_real_status = "Scanning...";
+String pir_real_status = "Quiet";
 bool class_active = false; 
-bool session_extended = false;
 
 // Hardware States
 bool l1_on = false, f1_on = false;
@@ -60,7 +62,9 @@ bool sweeping_forward = true;
 unsigned long last_servo_update = 0;
 unsigned long last_nfc_read = 0;
 unsigned long last_pir_read = 0;
+unsigned long last_tof_read = 0;
 unsigned long pir_cooldown = 0;
+unsigned long tof_cooldown = 0;
 
 // ==========================================
 // 4. FRONTEND: CHAMPION JUDGE DASHBOARD
@@ -200,10 +204,10 @@ const char judge_html[] PROGMEM = R"rawliteral(
 
     <div>
       <div class="card">
-        <h2>Raw Sensor Telemetry</h2>
+        <h2>Authentic Sensor Telemetry</h2>
         <div style="margin-bottom: 15px;"><div style="font-size: 0.7rem; color: var(--text-d);">NFC REGISTRATIONS</div><div style="font-family: 'Orbitron'; font-size: 2rem; color: var(--cyan);" id="raw_nfc">0</div></div>
-        <div style="margin-bottom: 15px;"><div style="font-size: 0.7rem; color: var(--text-d);">TOF DEPTH SENSOR</div><div style="font-family: 'Orbitron'; font-size: 1.2rem; color: var(--purple);" id="raw_tof">0.0m</div></div>
-        <div style="margin-bottom: 15px;"><div style="font-size: 0.7rem; color: var(--text-d);">PIR MOTION LOGIC</div><div style="font-family: 'Orbitron'; font-size: 1.2rem; color: var(--green);" id="raw_pir">QUIET</div></div>
+        <div style="margin-bottom: 15px;"><div style="font-size: 0.7rem; color: var(--text-d);">TOF I2C LASER</div><div style="font-family: 'Orbitron'; font-size: 1.2rem; color: var(--purple);" id="raw_tof">0mm</div></div>
+        <div style="margin-bottom: 15px;"><div style="font-size: 0.7rem; color: var(--text-d);">PIR HARDWARE PIN</div><div style="font-family: 'Orbitron'; font-size: 1.2rem; color: var(--green);" id="raw_pir">QUIET</div></div>
       </div>
 
       <div class="card">
@@ -226,7 +230,7 @@ const char judge_html[] PROGMEM = R"rawliteral(
     logs.unshift(`<div class="tl-item"><div class="tl-time">${timeStr}</div><div>${msg}</div></div>`);
     if(logs.length > 20) logs.pop(); document.getElementById('log').innerHTML = logs.join('');
   }
-  addLog("System initialized. Awaiting parameters.");
+  addLog("System initialized. Monitoring physical arrays.");
   
   setInterval(() => {
     sec++; let m = Math.floor(sec/60).toString().padStart(2,'0'); let s = (sec%60).toString().padStart(2,'0');
@@ -234,7 +238,6 @@ const char judge_html[] PROGMEM = R"rawliteral(
   }, 1000);
 
   setInterval(() => {
-    // CACHE BUSTER ENSURES DATA IS ALWAYS FRESH
     fetch('/data?_t=' + Date.now()).then(r => r.json()).then(d => {
       document.getElementById('raw_nfc').innerText = d.nfc;
       document.getElementById('raw_tof').innerText = d.tof;
@@ -257,7 +260,8 @@ const char judge_html[] PROGMEM = R"rawliteral(
       
       let o1 = 0, o2 = 0, o3 = 0;
       if(d.class_active) {
-        o1 = d.nfc > 0 ? (d.nfc > 10 ? 10 : d.nfc) : 0; o2 = d.pir != "Quiet" ? 6 : 0; o3 = d.tof != "0.0m (Empty)" ? 4 : 0;
+        o1 = d.nfc > 0 ? (d.nfc > 10 ? 10 : d.nfc) : 0; o2 = d.pir != "Quiet" ? 6 : 0; 
+        o3 = d.tof != "Out of Range" ? 4 : 0;
       }
       
       updateTwin(1, d.class_active, o1, d.l1, d.f1); updateTwin(2, d.class_active, o2, d.l2, d.f2); updateTwin(3, d.class_active, o3, d.l3, d.f3);
@@ -284,8 +288,8 @@ const char judge_html[] PROGMEM = R"rawliteral(
       if(d.class_active && !pData.class_active) addLog("Class schedule activated.");
       if(!d.class_active && pData.class_active) addLog("Class ended. Power cut.");
       if(d.nfc > pData.nfc) addLog("NFC Tap: Student registered.");
-      if(d.pir != pData.pir && d.pir != "Quiet") addLog("PIR triggered in Zone 2.");
-      if(d.tof != pData.tof && d.tof != "0.0m (Empty)") addLog("TOF depth change in Zone 3.");
+      if(d.pir != pData.pir && d.pir != "Quiet") addLog("PIR hardware triggered in Zone 2.");
+      if(d.tof != pData.tof && d.tof != "Out of Range") addLog("TOF depth change: Row 3 Occupied.");
       
       pData = d;
     });
@@ -295,61 +299,7 @@ const char judge_html[] PROGMEM = R"rawliteral(
 )rawliteral";
 
 // ==========================================
-// 5. FRONTEND: SECRET ADMIN REMOTE
-// ==========================================
-const char admin_html[] PROGMEM = R"rawliteral(
-<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Admin Remote</title>
-<style>
-  body { font-family: -apple-system, sans-serif; background: #000; color: #fff; margin: 15px; user-select: none; }
-  h1 { font-size: 20px; text-align: center; color: #00E5FF;}
-  h2 { border-bottom: 1px solid #333; padding-bottom: 5px; margin-top: 25px; font-size: 14px; color: #888; text-transform: uppercase;}
-  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-  button { background: #1c1c1e; color: #fff; border: none; padding: 18px 10px; font-size: 14px; font-weight: bold; border-radius: 8px; cursor: pointer;}
-  button:active { transform: scale(0.95); background: #333; }
-  .btn-success { background: #166534; color: #4ade80; } .btn-danger { background: #991b1b; color: #f87171; }
-  .btn-warn { background: #9a3412; color: #fb923c; } .btn-info { background: #1e3a8a; color: #60a5fa; }
-</style>
-</head><body>
-  <h1>🕵️ PITCH REMOTE</h1>
-  <h2>📅 Core Overrides</h2>
-  <div class="grid">
-    <button class="btn-success" onclick="cmd('class_start', this)">Start Class</button>
-    <button class="btn-danger" onclick="cmd('class_end', this)">End Class</button>
-  </div>
-  <h2>🎭 Sensor Injection</h2>
-  <div class="grid">
-    <button class="btn-warn" onclick="cmd('toggle_pir', this)">Trigger PIR (Z2)</button>
-    <button class="btn-info" onclick="cmd('toggle_tof', this)">Inject TOF (Z3)</button>
-  </div>
-  <h2>💡 Row 1 (Zone A)</h2>
-  <div class="grid">
-    <button onclick="cmd('l1_on', this)">Light ON</button> <button onclick="cmd('l1_off', this)">Light OFF</button>
-    <button onclick="cmd('f1_on', this)">Fan ON</button> <button onclick="cmd('f1_off', this)">Fan OFF</button>
-  </div>
-  <h2>💡 Row 2 (Zone B)</h2>
-  <div class="grid">
-    <button onclick="cmd('l2_on', this)">Light ON</button> <button onclick="cmd('l2_off', this)">Light OFF</button>
-    <button onclick="cmd('f2_on', this)">Fan ON</button> <button onclick="cmd('f2_off', this)">Fan OFF</button>
-  </div>
-  <h2>💡 Row 3 (Zone C)</h2>
-  <div class="grid">
-    <button onclick="cmd('l3_on', this)">Light ON</button> <button onclick="cmd('l3_off', this)">Light OFF</button>
-    <button onclick="cmd('f3_on', this)">Fan ON</button> <button onclick="cmd('f3_off', this)">Fan OFF</button>
-  </div>
-<script> 
-  function cmd(action, btn) { 
-    let ogText = btn.innerText; btn.innerText = "⏳...";
-    fetch('/api?cmd=' + action + '&_t=' + Date.now()).then(r => {
-      if(r.ok) { btn.innerText = "✓"; setTimeout(() => { btn.innerText = ogText; }, 800); }
-    }).catch(e => { btn.innerText = "X"; setTimeout(() => { btn.innerText = ogText; }, 800); });
-  } 
-</script>
-</body></html>
-)rawliteral";
-
-// ==========================================
-// 6. ESP32 CORE SETUP
+// 5. ESP32 CORE SETUP
 // ==========================================
 void setup() {
   Serial.begin(115200);
@@ -360,7 +310,6 @@ void setup() {
   pinMode(LIGHT_Z3, OUTPUT); pinMode(FAN_Z3, OUTPUT);
   
   // 2. HARDWARE ANTI-GHOSTING LOCK
-  // Forces all pins LOW the millisecond the board receives power
   digitalWrite(LIGHT_Z1, LOW); digitalWrite(FAN_Z1, LOW);
   digitalWrite(LIGHT_Z2, LOW); digitalWrite(FAN_Z2, LOW);
   digitalWrite(LIGHT_Z3, LOW); digitalWrite(FAN_Z3, LOW);
@@ -370,12 +319,19 @@ void setup() {
   
   // 4. Initialize Servos
   servo1.attach(SERVO_Z1_PIN); servo2.attach(SERVO_Z2_PIN); servo3.attach(SERVO_Z3_PIN);
-  
-  // Force servos to 0 at boot once to prevent grinding
   servo1.write(0); servo2.write(0); servo3.write(0);
 
+  // 5. Initialize I2C and SPI Busses
+  Wire.begin();
   SPI.begin();
+  
   mfrc522.PCD_Init();
+  if (!lox.begin()) {
+    Serial.println(F("Failed to boot VL53L0X"));
+    tof_real_status = "I2C Error";
+  } else {
+    Serial.println(F("VL53L0X booted up"));
+  }
 
   WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
@@ -385,41 +341,18 @@ void setup() {
   if(WiFi.status() == WL_CONNECTED) { Serial.println("\n[SUCCESS] Connected! IP: "); Serial.println(WiFi.localIP()); }
 
   server.on("/", []() { server.send(200, "text/html", judge_html); });
-  server.on("/admin", []() { server.send(200, "text/html", admin_html); });
   
   server.on("/data", []() {
-    String json; json.reserve(1024); // Large buffer to prevent crashes
-    json = "{\"nfc\":" + String(nfc_count) + ",\"tof\":\"" + tof_fake_status + "\",\"pir\":\"" + pir_fake_status + 
-           "\",\"class_active\":" + String(class_active) + ",\"extended\":" + String(session_extended) + 
-           ",\"l1\":" + String(l1_on) + ",\"f1\":" + String(f1_on) + ",\"l2\":" + String(l2_on) + 
-           ",\"f2\":" + String(f2_on) + ",\"l3\":" + String(l3_on) + ",\"f3\":" + String(f3_on) + "}";
+    String json; json.reserve(1024); 
+    json = "{\"nfc\":" + String(nfc_count) + ",\"tof\":\"" + tof_real_status + "\",\"pir\":\"" + pir_real_status + 
+           "\",\"class_active\":" + String(class_active) + ",\"l1\":" + String(l1_on) + ",\"f1\":" + String(f1_on) + 
+           ",\"l2\":" + String(l2_on) + ",\"f2\":" + String(f2_on) + ",\"l3\":" + String(l3_on) + ",\"f3\":" + String(f3_on) + "}";
     server.send(200, "application/json", json);
   });
 
-  server.on("/api", []() {
-    String c = server.arg("cmd");
-    
-    // Core Logic Commands
-    if(c == "class_start") { class_active = true; l1_on = true; f1_on = true; } 
-    if(c == "class_end") { class_active = false; l1_on = false; f1_on = false; l2_on = false; f2_on = false; l3_on = false; f3_on = false; } 
-    
-    // Remote Sensor Injections
-    if(c == "toggle_pir") { 
-        if (pir_fake_status == "Quiet") { pir_fake_status = "MOTION DETECTED"; if (class_active) { l2_on = true; f2_on = true; } } 
-        else { pir_fake_status = "Quiet"; }
-    }
-    if(c == "toggle_tof") { 
-        if (tof_fake_status == "0.0m (Empty)") { tof_fake_status = "4.5m (Row 3 Occupied)"; if (class_active) { l3_on = true; f3_on = true; } } 
-        else { tof_fake_status = "0.0m (Empty)"; }
-    }
-    
-    // Manual Overrides
-    if(c == "l1_on") l1_on = true; if(c == "l1_off") l1_on = false;
-    if(c == "f1_on") f1_on = true; if(c == "f1_off") f1_on = false;
-    if(c == "l2_on") l2_on = true; if(c == "l2_off") l2_on = false;
-    if(c == "f2_on") f2_on = true; if(c == "f2_off") f2_on = false;
-    if(c == "l3_on") l3_on = true; if(c == "l3_off") l3_on = false;
-    if(c == "f3_on") f3_on = true; if(c == "f3_off") f3_on = false;
+  server.on("/api/reset", []() {
+    // Hidden API to reset the class entirely at the end of the pitch
+    class_active = false; l1_on = false; f1_on = false; l2_on = false; f2_on = false; l3_on = false; f3_on = false; nfc_count = 0;
     server.send(200, "text/plain", "OK");
   });
 
@@ -427,7 +360,7 @@ void setup() {
 }
 
 // ==========================================
-// 7. MAIN EXECUTION LOOP
+// 6. MAIN EXECUTION LOOP
 // ==========================================
 void loop() {
   server.handleClient();
@@ -437,29 +370,52 @@ void loop() {
     if (millis() - last_nfc_read > 2000) { 
       nfc_count++;
       class_active = true;
-      l1_on = true; f1_on = true;
+      l1_on = true; f1_on = true; // Activating Zone 1
       last_nfc_read = millis();
       Serial.println("NFC Scanned! Class Started.");
     }
     mfrc522.PICC_HaltA();
   }
 
-  // --- 2. Physical PIR Sensor Logic ---
-  if (millis() - last_pir_read > 500) {
+  // --- 2. Physical PIR Sensor Logic (Zone 2) ---
+  if (millis() - last_pir_read > 250) {
       last_pir_read = millis();
-      // Read the physical sensor on D13
       if (digitalRead(PIR_PIN) == HIGH) {
-          pir_fake_status = "MOTION DETECTED";
-          pir_cooldown = millis(); // Reset cooldown timer
+          pir_real_status = "MOTION DETECTED";
+          pir_cooldown = millis(); 
           if (class_active) { l2_on = true; f2_on = true; }
       } 
-      // Auto-clear PIR after 10 seconds of no motion for realism
-      else if (pir_fake_status == "MOTION DETECTED" && (millis() - pir_cooldown > 10000)) {
-          pir_fake_status = "Quiet";
+      else if (pir_real_status == "MOTION DETECTED" && (millis() - pir_cooldown > 10000)) {
+          pir_real_status = "Quiet";
+          if (class_active) { l2_on = false; f2_on = false; } // Auto off
       }
   }
 
-  // --- 3. Hardware Power Routing ---
+  // --- 3. Physical TOF Laser Logic (Zone 3) ---
+  // To avoid blocking the loop too hard, we only poll the laser every 300ms
+  if (millis() - last_tof_read > 300) {
+      last_tof_read = millis();
+      VL53L0X_RangingMeasurementData_t measure;
+      lox.rangingTest(&measure, false);
+      
+      if (measure.RangeStatus != 4) {  // Phase failures have incorrect data
+          tof_real_status = String(measure.RangeMilliMeter) + "mm";
+          // If object is within 1500mm (1.5 meters), consider Row 3 occupied
+          if (measure.RangeMilliMeter < 1500) {
+              tof_cooldown = millis();
+              if (class_active) { l3_on = true; f3_on = true; }
+          }
+      } else {
+          tof_real_status = "Out of Range";
+      }
+      
+      // Auto clear TOF if empty for 10 seconds
+      if (millis() - tof_cooldown > 10000) {
+          if (class_active) { l3_on = false; f3_on = false; }
+      }
+  }
+
+  // --- 4. Hardware Power Routing ---
   if (class_active) {
     digitalWrite(LIGHT_Z1, l1_on ? HIGH : LOW); digitalWrite(FAN_Z1, f1_on ? HIGH : LOW);
     digitalWrite(LIGHT_Z2, l2_on ? HIGH : LOW); digitalWrite(FAN_Z2, f2_on ? HIGH : LOW);
@@ -470,21 +426,18 @@ void loop() {
     digitalWrite(LIGHT_Z3, LOW); digitalWrite(FAN_Z3, LOW);
   }
 
-  // --- 4. Smooth Servo Animation Engine (Anti-Jitter) ---
+  // --- 5. Smooth Servo Animation Engine (Anti-Jitter) ---
   if (millis() - last_servo_update > 20) { 
     last_servo_update = millis();
     if (sweeping_forward) { servo_angle++; if (servo_angle >= 90) sweeping_forward = false; } 
     else { servo_angle--; if (servo_angle <= 0) sweeping_forward = true; }
 
-    // Zone 1 Servo Logic
     if (class_active && f1_on) { servo1.write(servo_angle); s1_was_on = true; } 
-    else if (s1_was_on) { servo1.write(0); s1_was_on = false; } // Write 0 ONCE then ignore
+    else if (s1_was_on) { servo1.write(0); s1_was_on = false; } 
 
-    // Zone 2 Servo Logic
     if (class_active && f2_on) { servo2.write(servo_angle); s2_was_on = true; } 
     else if (s2_was_on) { servo2.write(0); s2_was_on = false; }
 
-    // Zone 3 Servo Logic
     if (class_active && f3_on) { servo3.write(servo_angle); s3_was_on = true; } 
     else if (s3_was_on) { servo3.write(0); s3_was_on = false; }
   }

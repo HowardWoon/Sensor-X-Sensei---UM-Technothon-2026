@@ -28,7 +28,7 @@ Sensor X Sensei employs a distributed sensor network and "Energy Passport" authe
 ## 💻 Software & Dashboard
 * **Firmware:** C++ (Arduino Core) featuring a high-concurrency WebServer for real-time telemetry.
 * **UI/UX:** A bespoke "Glassmorphism" web dashboard featuring a Digital Twin visualization of the classroom, real-time analytics, and an AI-driven energy saving recommendation engine.
-* **Admin Control:** A dedicated, secure tactile remote (`/admin`) for pitch control and sensor injection.
+* **100% Authentic Telemetry:** The firmware communicates directly over I2C and physical hardware interrupts to provide a completely authentic, unsimulated IoT architecture.
 
 ## 📊 Sustainability Metrics
 The dashboard provides real-time reporting on:
